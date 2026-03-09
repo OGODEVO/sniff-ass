@@ -1,0 +1,30 @@
+[project]
+name = "mybot"
+version = "0.1.0"
+description = "Polymarket 15-minute BTC Up/Down trading bot"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "py-clob-client>=0.0.1",
+    "websockets>=13.0",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "web3>=7.0",
+]
+
+[tool.setuptools]
+py-modules = [
+    "config",
+    "logger",
+    "candle_tracker",
+    "indicators",
+    "price_feed",
+    "market_scanner",
+    "edge_calculator",
+    "position_sizer",
+    "risk_manager",
+    "clob_stream",
+    "executor",
+    "paper_trader",
+    "main",
+]
