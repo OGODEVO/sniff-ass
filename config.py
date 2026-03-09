@@ -47,12 +47,12 @@ CHAINLINK_AGGREGATORS = {
 DRY_RUN: bool = os.getenv("DRY_RUN", "true").lower() == "true"
 BANKROLL: float = float(os.getenv("BANKROLL", "1000.0"))
 
-MIN_EDGE: float = 0.10              # 10 cents minimum edge to trade
-MIN_TRUE_PROB: float = 0.60         # never trade below 60% true prob
-MAX_POSITION_PCT: float = 0.05      # 5% of bankroll per trade
-KELLY_FRACTION_EARLY: float = 0.25  # quarter-Kelly for early window
-KELLY_FRACTION_LATE: float = 0.10   # 10% Kelly for late window (>80¢)
-MAX_SIMULTANEOUS: int = 6           # max concurrent positions
+MIN_EDGE: float = 0.07              # 7 cents minimum edge to trade
+MIN_TRUE_PROB: float = 0.55         # never trade below 55% true prob
+MAX_POSITION_PCT: float = 0.15      # 15% of bankroll per trade (needed for $100 bankroll)
+KELLY_FRACTION_EARLY: float = 0.50  # half-Kelly for early window
+KELLY_FRACTION_LATE: float = 0.20   # 20% Kelly for late window (>80¢)
+MAX_SIMULTANEOUS: int = 3           # max concurrent positions (lower because positions are larger)
 DAILY_LOSS_LIMIT_PCT: float = 0.15  # halt if daily loss exceeds 15%
 MAX_DRAWDOWN_PCT: float = 0.25      # halt if drawdown from peak > 25%
 
@@ -68,7 +68,7 @@ LATE_WINDOW_START: float = 3.0      # late window = last 3 min of candle
 SCAN_INTERVAL_SEC: int = 30         # main loop frequency
 
 # ── Order Splitting ────────────────────────────────────────────
-ORDER_SPLIT_COUNT: int = 10         # number of micro-orders
+ORDER_SPLIT_COUNT: int = 3          # number of micro-orders (lower for $100 bankroll to hit $5 min)
 ORDER_DELAY_MIN: float = 0.5       # seconds between micro-orders
 ORDER_DELAY_MAX: float = 1.0
 
