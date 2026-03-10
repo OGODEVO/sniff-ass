@@ -20,7 +20,7 @@ GAMMA_HOST = "https://gamma-api.polymarket.com"
 SUPPORTED_ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 
 # Binance WebSocket streams (kline_1m for RSI + volume)
-BINANCE_WS_BASE = "wss://stream.binance.us:9443/ws"
+BINANCE_WS_BASE = "wss://stream.binance.us:9443/stream?streams="
 BINANCE_SYMBOLS = {
     "BTC": "btcusdt",
     "ETH": "ethusdt",
@@ -59,6 +59,8 @@ MAX_DRAWDOWN_PCT: float = 0.25      # halt if drawdown from peak > 25%
 # ── Price Caps (window-specific) ──────────────────────────────
 MAX_PRICE_EARLY: float = 0.35       # early window: only buy under 35¢
 MAX_PRICE_LATE: float = 0.99        # late window: can buy up to 99¢
+MIN_PRICE_EARLY: float = 0.15       # don't buy extreme longshots < 15¢
+MIN_PRICE_LATE: float = 0.15
 
 # ── Timing Windows ─────────────────────────────────────────────
 CANDLE_DURATION_MIN: int = 15

@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from config import (
     MAX_PRICE_EARLY,
     MAX_PRICE_LATE,
+    MIN_PRICE_EARLY,
+    MIN_PRICE_LATE,
     MAX_TIME_ELAPSED_EARLY,
     MIN_EDGE,
     MIN_TIME_REMAINING,
@@ -180,10 +182,14 @@ def should_trade(signal: MarketSignal) -> tuple[bool, str, float, float, float]:
         log.debug("[EDGE] Low volume ratio %.2f in early window, skipping", signal.volume_ratio)
         return False, "SKIP", 0, 0, 0
 
-    # Rule 6: Max price per window
+    # Rule 6: Max and Min price per window
     max_price = MAX_PRICE_EARLY if signal.entry_window == "EARLY" else MAX_PRICE_LATE
+    min_price = MIN_PRICE_EARLY if signal.entry_window == "EARLY" else MIN_PRICE_LATE
     if market_price > max_price:
         log.debug("[EDGE] Price %.2f > max %.2f for %s window", market_price, max_price, signal.entry_window)
+        return False, "SKIP", 0, 0, 0
+    if market_price < min_price:
+        log.debug("[EDGE] Price %.2f < min %.2f for %s window", market_price, min_price, signal.entry_window)
         return False, "SKIP", 0, 0, 0
 
     log.info(

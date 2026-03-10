@@ -148,7 +148,7 @@ class PriceFeed:
         streams = "/".join(
             f"{sym}@kline_1m" for sym in BINANCE_SYMBOLS.values()
         )
-        url = f"{BINANCE_WS_BASE}/{streams}"
+        url = f"{BINANCE_WS_BASE}{streams}"
         log.info("[PRICE_FEED] Connecting to Binance kline WS: %s", url)
 
         # Reverse map: "btcusdt" → "BTC"
