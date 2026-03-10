@@ -20,7 +20,7 @@ GAMMA_HOST = "https://gamma-api.polymarket.com"
 SUPPORTED_ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 
 # Binance WebSocket streams (kline_1m for RSI + volume)
-BINANCE_WS_BASE = os.getenv("BINANCE_WS_BASE", "wss://stream.binance.com:9443/stream?streams=")
+BINANCE_WS_BASE = os.getenv("BINANCE_WS_BASE", "wss://data-stream.binance.vision:9443/stream?streams=")
 BINANCE_SYMBOLS = {
     "BTC": "btcusdt",
     "ETH": "ethusdt",
