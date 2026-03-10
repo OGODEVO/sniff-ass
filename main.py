@@ -158,16 +158,16 @@ async def bot_loop():
         token_id = market.token_id_up if side == "UP" else market.token_id_down
 
         # Risk check (daily loss, drawdown, position count, min prob, duplicate entry)
-        if not risk_mgr.check_all(token_id, edge, true_prob, BANKROLL, daily_pnl):
+        if not risk_mgr.check_all(token_id, edge, true_prob, paper.bankroll, daily_pnl):
             continue
 
-        # Size via Kelly
+        # Size via Kelly — use LIVE bankroll, not static config
         size = calc_kelly_size(
             edge=edge,
             market_price=mkt_price,
             true_prob=true_prob,
             entry_window=sig.entry_window,
-            bankroll=BANKROLL,
+            bankroll=paper.bankroll,
         )
         if size < 1.0:
             log.debug("[BOT] Size $%.2f too small, skipping", size)
