@@ -48,7 +48,7 @@ DRY_RUN: bool = os.getenv("DRY_RUN", "true").lower() == "true"
 BANKROLL: float = float(os.getenv("BANKROLL", "1000.0"))
 
 MIN_EDGE: float = 0.06              # 6 cents min edge to allow more valid small-bankroll trades
-MIN_TRUE_PROB: float = 0.55         # never trade below 55% true prob
+MIN_TRUE_PROB: float = 0.52         # allow earlier 5m/15m entries before certainty fully builds
 MAX_POSITION_PCT: float = 0.15      # 15% of bankroll per trade (needed for $100 bankroll)
 KELLY_FRACTION_EARLY: float = 0.40  # 40% Kelly for early window
 KELLY_FRACTION_LATE: float = 0.30   # 30% Kelly for late window (>80¢)

@@ -205,10 +205,10 @@ def should_trade(signal: MarketSignal) -> tuple[bool, str, float, float, float]:
         return False, "SKIP", 0, 0, 0
 
     # Rule 5: RSI confirmation
-    if side == "UP" and signal.rsi_1min < 40:
+    if side == "UP" and signal.rsi_1min < 35:
         log.debug("[EDGE] RSI %.1f contradicts UP bet, skipping", signal.rsi_1min)
         return False, "SKIP", 0, 0, 0
-    if side == "DOWN" and signal.rsi_1min > 60:
+    if side == "DOWN" and signal.rsi_1min > 65:
         log.debug("[EDGE] RSI %.1f contradicts DOWN bet, skipping", signal.rsi_1min)
         return False, "SKIP", 0, 0, 0
 

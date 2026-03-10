@@ -149,8 +149,18 @@ async def bot_loop(
             # If WS has no price, we skip. We do not fallback to Gamma here to avoid stale edges.
             ws_up = clob_stream.get_best_ask(market.token_id_up)
             ws_down = clob_stream.get_best_ask(market.token_id_down)
-            
+
             if ws_up is None or ws_down is None:
+                log.debug(
+                    "[BOT] Missing CLOB ask(s) for %s %sm %s | up_has=%s down_has=%s up_ask=%s down_ask=%s",
+                    asset,
+                    market.timeframe_min,
+                    market.condition_id[:12],
+                    clob_stream.has_price(market.token_id_up),
+                    clob_stream.has_price(market.token_id_down),
+                    f"{ws_up:.4f}" if ws_up is not None else "None",
+                    f"{ws_down:.4f}" if ws_down is not None else "None",
+                )
                 continue
 
             mkt_up, mkt_down = ws_up, ws_down
