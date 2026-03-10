@@ -47,7 +47,7 @@ CHAINLINK_AGGREGATORS = {
 DRY_RUN: bool = os.getenv("DRY_RUN", "true").lower() == "true"
 BANKROLL: float = float(os.getenv("BANKROLL", "1000.0"))
 
-MIN_EDGE: float = 0.07              # 7 cents minimum edge to trade
+MIN_EDGE: float = 0.09              # 9 cents min edge (net 7¢ after 2¢ spread crossing)
 MIN_TRUE_PROB: float = 0.55         # never trade below 55% true prob
 MAX_POSITION_PCT: float = 0.15      # 15% of bankroll per trade (needed for $100 bankroll)
 KELLY_FRACTION_EARLY: float = 0.50  # half-Kelly for early window

@@ -130,8 +130,12 @@ async def bot_loop():
         ws_down = clob_stream.get_best_ask(market.token_id_down)
         if ws_up is not None:
             mkt_up = ws_up
+        else:
+            log.debug("[BOT] ⚠️ CLOB WS price missing for %s UP — using Gamma (may be stale)", asset)
         if ws_down is not None:
             mkt_down = ws_down
+        else:
+            log.debug("[BOT] ⚠️ CLOB WS price missing for %s DOWN — using Gamma (may be stale)", asset)
 
         # Build full signal
         sig = build_signal(
