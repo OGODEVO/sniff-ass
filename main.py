@@ -21,7 +21,7 @@ from config import (
     SCAN_INTERVAL_SEC,
     SUPPORTED_ASSETS,
 )
-from edge_calculator import build_signal, should_trade
+from edge_calculator import build_signal, should_trade, reset_cycle_directions
 from executor import Executor
 from indicators import Indicators
 from logger import log
@@ -96,6 +96,9 @@ async def bot_loop():
 
     # 1. Resolve any expired paper trades
     await resolve_pending_trades()
+
+    # 1.5 Reset same-direction correlation counter for this scan cycle
+    reset_cycle_directions()
 
     # 2. Scan for active markets (all assets)
     markets = await scan_active_markets()

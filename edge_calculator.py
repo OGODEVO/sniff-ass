@@ -24,6 +24,24 @@ from config import (
 from logger import log
 
 
+# ── Maximum edge sanity check ─────────────────────────────────
+# If our model diverges from the crowd by more than this, assume MODEL error
+MAX_EDGE: float = 0.45
+
+# ── Correlation limit ─────────────────────────────────────────
+# Max assets betting the same direction in one scan cycle
+MAX_SAME_DIRECTION: int = 2
+
+# Track how many trades fired in each direction per scan cycle
+_cycle_directions: dict[str, int] = {}
+
+
+def reset_cycle_directions() -> None:
+    """Call at the start of each bot_loop scan cycle."""
+    global _cycle_directions
+    _cycle_directions = {"UP": 0, "DOWN": 0}
+
+
 @dataclass
 class MarketSignal:
     """Full signal object for a single market."""
@@ -169,7 +187,16 @@ def should_trade(signal: MarketSignal) -> tuple[bool, str, float, float, float]:
     if edge < MIN_EDGE:
         return False, "SKIP", 0, 0, 0
 
-    # Rule 4: RSI confirmation
+    # Rule 4: REQUIRE valid indicators — skip if Binance WS is disconnected
+    # RSI=50.0 + vol=1.0 are the defaults when no data exists
+    if signal.rsi_1min == 50.0 and signal.volume_ratio == 1.0:
+        log.warning(
+            "[EDGE] ⚠️ Indicators are default (RSI=50, vol=1.0) — Binance WS likely down. SKIPPING %s %s",
+            side, signal.asset,
+        )
+        return False, "SKIP", 0, 0, 0
+
+    # Rule 5: RSI confirmation
     if side == "UP" and signal.rsi_1min < 40:
         log.debug("[EDGE] RSI %.1f contradicts UP bet, skipping", signal.rsi_1min)
         return False, "SKIP", 0, 0, 0
@@ -177,20 +204,38 @@ def should_trade(signal: MarketSignal) -> tuple[bool, str, float, float, float]:
         log.debug("[EDGE] RSI %.1f contradicts DOWN bet, skipping", signal.rsi_1min)
         return False, "SKIP", 0, 0, 0
 
-    # Rule 5: Volume confirmation (early window only)
+    # Rule 6: Volume confirmation (early window only)
     if signal.entry_window == "EARLY" and signal.volume_ratio < 0.8:
         log.debug("[EDGE] Low volume ratio %.2f in early window, skipping", signal.volume_ratio)
         return False, "SKIP", 0, 0, 0
 
-    # Rule 6: Max and Min price per window
+    # Rule 7: Max and Min price per window — block extreme longshots
     max_price = MAX_PRICE_EARLY if signal.entry_window == "EARLY" else MAX_PRICE_LATE
     min_price = MIN_PRICE_EARLY if signal.entry_window == "EARLY" else MIN_PRICE_LATE
     if market_price > max_price:
         log.debug("[EDGE] Price %.2f > max %.2f for %s window", market_price, max_price, signal.entry_window)
         return False, "SKIP", 0, 0, 0
     if market_price < min_price:
-        log.debug("[EDGE] Price %.2f < min %.2f for %s window", market_price, min_price, signal.entry_window)
+        log.debug("[EDGE] Price %.2f < min %.2f — extreme longshot blocked", market_price, min_price)
         return False, "SKIP", 0, 0, 0
+
+    # Rule 8: Edge sanity cap — if model disagrees with crowd by >45¢, model is wrong
+    if edge > MAX_EDGE:
+        log.warning(
+            "[EDGE] ⚠️ Edge %.2f > max %.2f for %s %s — model likely wrong, SKIPPING",
+            edge, MAX_EDGE, side, signal.asset,
+        )
+        return False, "SKIP", 0, 0, 0
+
+    # Rule 9: Correlation block — max 2 assets in the same direction per cycle
+    dir_count = _cycle_directions.get(side, 0)
+    if dir_count >= MAX_SAME_DIRECTION:
+        log.warning(
+            "[EDGE] ⚠️ Already %d %s bets this cycle — correlation block, SKIPPING %s",
+            dir_count, side, signal.asset,
+        )
+        return False, "SKIP", 0, 0, 0
+    _cycle_directions[side] = dir_count + 1
 
     log.info(
         "[EDGE] ✅ Signal: %s %s | window=%s | prob=%.2f mkt=%.2f edge=%.2f | RSI=%.1f vol=%.2f",
