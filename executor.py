@@ -109,11 +109,14 @@ class Executor:
         """Place a single FOK order."""
         if price <= 0:
             return None
-        num_shares = round(size_usd / price, 2)
+        price = round(price, 2)  # Polymarket: max 2 decimal places on price
+        num_shares = int(size_usd / price)  # Polymarket: shares must be whole numbers
+        if num_shares < 1:
+            return None
 
         if DRY_RUN:
             log.info(
-                "[EXECUTOR] 🧪 DRY RUN — BUY %s | price=%.2f $%.2f (%.0f shares)",
+                "[EXECUTOR] 🧪 DRY RUN — BUY %s | price=%.2f $%.2f (%d shares)",
                 token_id[:16], price, size_usd, num_shares,
             )
             return {"dry_run": True, "token_id": token_id, "price": price, "size": size_usd}
