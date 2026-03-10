@@ -30,7 +30,7 @@ MAX_EDGE: float = 0.45
 
 # ── Correlation limit ─────────────────────────────────────────
 # Max assets betting the same direction in one scan cycle
-MAX_SAME_DIRECTION: int = 2
+MAX_SAME_DIRECTION: int = 3
 
 # Track how many trades fired in each direction per scan cycle
 _cycle_directions: dict[str, int] = {}
@@ -77,6 +77,7 @@ def calc_true_probability(
     candle_open_price: float,
     current_price: float,
     time_elapsed_min: float,
+    timeframe_min: int = 15,
 ) -> tuple[float, float]:
     """
     V2 probability formula:
@@ -88,7 +89,7 @@ def calc_true_probability(
         return 0.50, 0.50
 
     price_delta_pct = (current_price - candle_open_price) / candle_open_price
-    time_weight = time_elapsed_min / 15.0  # 0.0 at start → 1.0 at end
+    time_weight = time_elapsed_min / timeframe_min  # 0.0 at start → 1.0 at end
 
     direction_strength = price_delta_pct * 80
     certainty_boost = direction_strength * time_weight * 0.5
@@ -100,13 +101,14 @@ def calc_true_probability(
     return round(prob_up, 4), round(prob_down, 4)
 
 
-def _get_entry_window(elapsed: float, remaining: float) -> str:
+def _get_entry_window(elapsed: float, remaining: float, timeframe_min: int = 15) -> str:
     """Classify the current timing window."""
-    if remaining < MIN_TIME_REMAINING:
+    scale = timeframe_min / 15.0
+    if remaining < MIN_TIME_REMAINING * scale:
         return "DEAD"  # too close to resolution
-    if elapsed <= MAX_TIME_ELAPSED_EARLY:
+    if elapsed <= MAX_TIME_ELAPSED_EARLY * scale:
         return "EARLY"
-    if remaining <= LATE_WINDOW_START:
+    if remaining <= LATE_WINDOW_START * scale:
         return "LATE"
     return "DEAD"  # minutes 3–12, avoid
 
@@ -125,16 +127,22 @@ def build_signal(
     rsi: float,
     volume_ratio: float,
     momentum: float,
+    timeframe_min: int = 15,
 ) -> MarketSignal:
     """Build a complete MarketSignal with edge computation."""
-    prob_up, prob_down = calc_true_probability(candle_open_price, current_price, elapsed_min)
+    prob_up, prob_down = calc_true_probability(
+        candle_open_price,
+        current_price,
+        elapsed_min,
+        timeframe_min=timeframe_min,
+    )
     edge_up = prob_up - market_price_up
     edge_down = prob_down - market_price_down
     price_delta_pct = (
         (current_price - candle_open_price) / candle_open_price
         if candle_open_price > 0 else 0.0
     )
-    window = _get_entry_window(elapsed_min, remaining_min)
+    window = _get_entry_window(elapsed_min, remaining_min, timeframe_min=timeframe_min)
 
     return MarketSignal(
         asset=asset,
@@ -227,7 +235,7 @@ def should_trade(signal: MarketSignal) -> tuple[bool, str, float, float, float]:
         )
         return False, "SKIP", 0, 0, 0
 
-    # Rule 9: Correlation block — max 2 assets in the same direction per cycle
+    # Rule 9: Correlation block — max 3 assets in the same direction per cycle
     dir_count = _cycle_directions.get(side, 0)
     if dir_count >= MAX_SAME_DIRECTION:
         log.warning(

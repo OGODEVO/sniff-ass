@@ -94,7 +94,7 @@ async def resolve_pending_trades():
 _cached_markets = []
 
 async def background_market_scanner() -> None:
-    """Poll Gamma API every 30s to find active 15m markets, decoupling from fast loop."""
+    """Poll Gamma API every 30s to find active 5m/15m markets, decoupling from fast loop."""
     global _cached_markets
     while True:
         try:
@@ -133,7 +133,7 @@ async def bot_loop(
             asset = market.asset
 
             # Ensure we have price data for this asset
-            candle_data = price_feed.candle_tracker.get_candle_data(asset)
+            candle_data = price_feed.candle_tracker.get_candle_data(asset, market.timeframe_min)
             if not candle_data:
                 continue
 
@@ -170,6 +170,7 @@ async def bot_loop(
                 rsi=rsi,
                 volume_ratio=vol_ratio,
                 momentum=momentum,
+                timeframe_min=market.timeframe_min,
             )
 
             # Gate check
@@ -197,8 +198,8 @@ async def bot_loop(
                 continue
 
             log.info(
-                "[BOT] 🎯 %s %s %s | window=%s | edge=%.2f price=%.2f $%.2f | RSI=%.0f vol=%.1f",
-                side, asset, market.condition_id[:12], sig.entry_window,
+                "[BOT] 🎯 %s %s %sm %s | window=%s | edge=%.2f price=%.2f $%.2f | RSI=%.0f vol=%.1f",
+                side, asset, market.timeframe_min, market.condition_id[:12], sig.entry_window,
                 edge, mkt_price, size, rsi, vol_ratio,
             )
 
@@ -284,10 +285,10 @@ async def main():
     finally:
         # Resolve remaining trades
         await resolve_pending_trades()
-        feed_task.cancel()
-        clob_task.cancel()
-        scanner_task.cancel()
-        bot_task.cancel()
+        tasks = [feed_task, clob_task, scanner_task, bot_task]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         elapsed = (_time.time() - _start_time) / 3600
         log.info("=" * 60)
         log.info("[BOT] FINAL RESULTS (%.1fh)", elapsed)

@@ -16,8 +16,8 @@ def calc_kelly_size(
     """
     Compute position size in USD using fractional Kelly.
 
-    Uses KELLY_FRACTION_EARLY (0.25) for early-window entries and
-    KELLY_FRACTION_LATE (0.10) for late-window / high-price entries.
+    Uses KELLY_FRACTION_EARLY (0.40) for early-window entries and
+    KELLY_FRACTION_LATE (0.30) for late-window / high-price entries.
     """
     if market_price <= 0 or market_price >= 1:
         return 0.0

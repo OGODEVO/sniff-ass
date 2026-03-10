@@ -1,9 +1,5 @@
 """
-Market scanner — discovers active 15-min Up/Down crypto markets via slug-based lookup.
-
-Strategy: construct slugs from 15-min aligned timestamps
-(`{asset}-updown-15m-{epoch}`), then fetch from Gamma events API.
-This bypasses the Gamma search which misses short-duration crypto markets.
+Market scanner — discovers active 5-min and 15-min Up/Down crypto markets via slug lookup.
 """
 
 from __future__ import annotations
@@ -12,15 +8,15 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
 from config import GAMMA_HOST, SUPPORTED_ASSETS
 from logger import log
 
-# Slug pattern: btc-updown-15m-1773067500
-_SLUG_PATTERN = re.compile(r"^(btc|eth|sol|xrp)-updown-15m-(\d+)$")
+# Slug pattern: btc-updown-5m-1773067500 / btc-updown-15m-1773067500
+_SLUG_PATTERN = re.compile(r"^(btc|eth|sol|xrp)-updown-(5|15)m-(\d+)$")
 
 # Map slug prefix → our asset name
 _SLUG_ASSET_MAP = {
@@ -47,7 +43,7 @@ def _parse_json_field(value, default=None):
 
 @dataclass
 class ActiveMarket:
-    """Parsed representation of a live 15-min Up/Down market."""
+    """Parsed representation of a live Up/Down market."""
 
     condition_id: str
     question: str
@@ -61,24 +57,31 @@ class ActiveMarket:
     minutes_elapsed: float
     time_remaining: float
     asset: str
+    timeframe_min: int
 
 
 def _build_candidate_slugs() -> list[str]:
     """
-    Generate candidate slugs for the current, previous, and next 15-min windows.
-    Markets open every 15 minutes aligned to :00/:15/:30/:45.
+    Generate candidate slugs for the current, previous, and next 5m/15m windows.
     """
     now = int(time.time())
-    aligned = (now // 900) * 900  # round down to nearest 15 min
-
     slugs = []
-    # Check previous, current, and next two windows
+
+    aligned_15m = (now // 900) * 900
     for offset in [-900, 0, 900, 1800]:
-        ts = aligned + offset
+        ts = aligned_15m + offset
         for asset_lower in ["btc", "eth", "sol", "xrp"]:
             asset_upper = _SLUG_ASSET_MAP[asset_lower]
             if asset_upper in SUPPORTED_ASSETS:
                 slugs.append(f"{asset_lower}-updown-15m-{ts}")
+
+    aligned_5m = (now // 300) * 300
+    for offset in [-300, 0, 300, 600]:
+        ts = aligned_5m + offset
+        for asset_lower in ["btc", "eth", "sol", "xrp"]:
+            asset_upper = _SLUG_ASSET_MAP[asset_lower]
+            if asset_upper in SUPPORTED_ASSETS:
+                slugs.append(f"{asset_lower}-updown-5m-{ts}")
 
     return slugs
 
@@ -107,7 +110,11 @@ def _parse_market(event: dict, asset: str) -> ActiveMarket | None:
         return None
 
     m = markets[0]
+    event_tokens = event.get("tokens", [])
     now = datetime.now(timezone.utc)
+
+    slug_str = m.get("slug", "")
+    timeframe_min = 5 if "-updown-5m-" in slug_str else 15
 
     # Parse end time
     end_str = m.get("endDate", "")
@@ -123,15 +130,14 @@ def _parse_market(event: dict, asset: str) -> ActiveMarket | None:
     try:
         event_start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
     except (ValueError, AttributeError):
-        event_start = end_time.replace(
-            minute=((end_time.minute - 15) % 60),
-        )
+        event_start = end_time - timedelta(minutes=timeframe_min)
 
     remaining_sec = (end_time - now).total_seconds()
     elapsed_sec = (now - event_start).total_seconds()
+    max_elapsed_sec = timeframe_min * 60
 
     # Skip resolved or far-future markets
-    if remaining_sec <= 0 or elapsed_sec < 0 or elapsed_sec > 900:
+    if remaining_sec <= 0 or elapsed_sec < 0 or elapsed_sec > max_elapsed_sec:
         return None
 
     time_remaining = remaining_sec / 60
@@ -174,14 +180,14 @@ def _parse_market(event: dict, asset: str) -> ActiveMarket | None:
                 elif outcome in ("down", "no"):
                     token_id_down = tid
 
-    if not token_id_up and not token_id_down:
+    if not token_id_up or not token_id_down:
         log.warning("[SCANNER] No token IDs found for %s", m.get("slug", ""))
         return None
 
     return ActiveMarket(
         condition_id=m.get("conditionId", m.get("questionID", "")),
         question=m.get("question", ""),
-        slug=m.get("slug", ""),
+        slug=slug_str,
         token_id_up=token_id_up,
         token_id_down=token_id_down,
         outcome_price_up=price_up,
@@ -191,12 +197,13 @@ def _parse_market(event: dict, asset: str) -> ActiveMarket | None:
         minutes_elapsed=round(minutes_elapsed, 2),
         time_remaining=round(time_remaining, 2),
         asset=asset,
+        timeframe_min=timeframe_min,
     )
 
 
 async def scan_active_markets() -> list[ActiveMarket]:
     """
-    Discover active 15-min crypto markets via slug-based lookup.
+    Discover active 5-min and 15-min crypto markets via slug-based lookup.
     Constructs slugs from aligned timestamps, fetches from Gamma events API.
     """
     slugs = _build_candidate_slugs()
@@ -222,14 +229,14 @@ async def scan_active_markets() -> list[ActiveMarket]:
                 results.append(market)
 
     if results:
-        log.info("[SCANNER] Found %d active 15m markets", len(results))
+        log.info("[SCANNER] Found %d active 5m/15m markets", len(results))
         for r in results:
             log.info(
-                "[SCANNER]   %s %s | elapsed=%.1fm rem=%.1fm | up=%.2f down=%.2f",
-                r.asset, r.slug, r.minutes_elapsed, r.time_remaining,
+                "[SCANNER]   %s %sm %s | elapsed=%.1fm rem=%.1fm | up=%.2f down=%.2f",
+                r.asset, r.timeframe_min, r.slug, r.minutes_elapsed, r.time_remaining,
                 r.outcome_price_up, r.outcome_price_down,
             )
     else:
-        log.debug("[SCANNER] No active 15m markets found (checked %d slugs)", len(slugs))
+        log.debug("[SCANNER] No active 5m/15m markets found (checked %d slugs)", len(slugs))
 
     return results
