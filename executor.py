@@ -132,7 +132,7 @@ class Executor:
                 side=BUY,
                 token_id=token_id,
             ))
-            result = client.post_order(order, OrderType.FOK)
+            result = client.post_order(order, OrderType.FAK)
             log.info(
                 "[EXECUTOR] ✅ Fill: %s | price=%.2f shares=%.0f | %s",
                 token_id[:16], price, num_shares, result,
