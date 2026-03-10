@@ -90,128 +90,149 @@ async def resolve_pending_trades():
 
 # ── Main loop ─────────────────────────────────────────────────
 
-async def bot_loop():
-    """One cycle: resolve old trades, scan markets, signal, size, execute."""
-    global daily_pnl, _trade_count
+# Cache of active markets updated by background task
+_cached_markets = []
 
-    # 1. Resolve any expired paper trades
-    await resolve_pending_trades()
+async def background_market_scanner() -> None:
+    """Poll Gamma API every 30s to find active 15m markets, decoupling from fast loop."""
+    global _cached_markets
+    while True:
+        try:
+            markets = await scan_active_markets()
+            _cached_markets = markets
+        except Exception as exc:
+            log.error("[SCANNER] Error fetching markets: %s", exc)
+        await asyncio.sleep(SCAN_INTERVAL_SEC)
 
-    # 1.5 Reset same-direction correlation counter for this scan cycle
-    reset_cycle_directions()
+async def bot_loop(
+    price_feed: PriceFeed,
+    indicators: Indicators,
+    risk_mgr: RiskManager,
+    paper: PaperTrader,
+    clob_stream: ClobStream,
+    executor: Executor,
+) -> None:
+    """Main sub-second fast loop for signal generation and execution."""
+    global daily_pnl, _trade_count, _cached_markets
 
-    # 2. Scan for active markets (all assets)
-    markets = await scan_active_markets()
-    if not markets:
-        log.info("[BOT] No active Up/Down markets found")
-        return
+    log.info("[BOT] Starting high-speed evaluation loop (0.5s intervals)")
 
-    for market in markets:
-        asset = market.asset
+    while True:
+        # 1. Resolve any expired paper trades (does not block, uses local data)
+        await resolve_pending_trades()
 
-        # Ensure we have price data for this asset
-        candle_data = candle_tracker.get_candle_data(asset)
-        if not candle_data:
-            log.debug("[BOT] No candle data for %s yet, skipping", asset)
+        # 1.5 Reset same-direction correlation counter for this scan cycle
+        reset_cycle_directions()
+
+        markets = _cached_markets
+        if not markets:
+            await asyncio.sleep(1.0)
             continue
 
-        # Get indicator values
-        rsi = indicators.get_rsi(asset)
-        vol_ratio = indicators.get_volume_ratio(asset)
-        momentum = indicators.get_momentum(asset)
+        for market in markets:
+            asset = market.asset
 
-        # Subscribe new tokens to CLOB WS (no-op if already subscribed)
-        await clob_stream.subscribe([market.token_id_up, market.token_id_down])
+            # Ensure we have price data for this asset
+            candle_data = price_feed.candle_tracker.get_candle_data(asset)
+            if not candle_data:
+                continue
 
-        # Use CLOB WS prices (real-time), fall back to Gamma-reported
-        mkt_up = market.outcome_price_up
-        mkt_down = market.outcome_price_down
-        ws_up = clob_stream.get_best_ask(market.token_id_up)
-        ws_down = clob_stream.get_best_ask(market.token_id_down)
-        if ws_up is not None:
-            mkt_up = ws_up
-        else:
-            log.debug("[BOT] ⚠️ CLOB WS price missing for %s UP — using Gamma (may be stale)", asset)
-        if ws_down is not None:
-            mkt_down = ws_down
-        else:
-            log.debug("[BOT] ⚠️ CLOB WS price missing for %s DOWN — using Gamma (may be stale)", asset)
+            # Need real-time indicators
+            rsi = indicators.get_rsi(asset)
+            vol_ratio = indicators.get_volume_ratio(asset)
+            momentum = indicators.get_momentum(asset)
 
-        # Build full signal
-        sig = build_signal(
-            asset=asset,
-            market_id=market.condition_id,
-            token_id_up=market.token_id_up,
-            token_id_down=market.token_id_down,
-            candle_open_price=candle_data["open_price"],
-            current_price=candle_data["current_price"],
-            elapsed_min=candle_data["elapsed_minutes"],
-            remaining_min=candle_data["remaining_minutes"],
-            market_price_up=mkt_up,
-            market_price_down=mkt_down,
-            rsi=rsi,
-            volume_ratio=vol_ratio,
-            momentum=momentum,
-        )
+            # Subscribe new tokens to CLOB WS (no-op if already subscribed)
+            await clob_stream.subscribe([market.token_id_up, market.token_id_down])
 
-        # Entry decision (RSI + volume + window + edge checks)
-        trade, side, edge, mkt_price, true_prob = should_trade(sig)
-        if not trade:
-            continue
+            # ONLY use CLOB WS prices (real-time). Fast loop cannot block on REST calls.
+            # If WS has no price, we skip. We do not fallback to Gamma here to avoid stale edges.
+            ws_up = clob_stream.get_best_ask(market.token_id_up)
+            ws_down = clob_stream.get_best_ask(market.token_id_down)
+            
+            if ws_up is None or ws_down is None:
+                continue
 
-        token_id = market.token_id_up if side == "UP" else market.token_id_down
+            mkt_up, mkt_down = ws_up, ws_down
 
-        # Risk check (daily loss, drawdown, position count, min prob, duplicate entry)
-        if not risk_mgr.check_all(token_id, edge, true_prob, paper.bankroll, daily_pnl):
-            continue
+            # Build full signal
+            sig = build_signal(
+                asset=asset,
+                market_id=market.condition_id,
+                token_id_up=market.token_id_up,
+                token_id_down=market.token_id_down,
+                candle_open_price=candle_data["open_price"],
+                current_price=candle_data["current_price"],
+                elapsed_min=candle_data["elapsed_minutes"],
+                remaining_min=candle_data["remaining_minutes"],
+                market_price_up=mkt_up,
+                market_price_down=mkt_down,
+                rsi=rsi,
+                volume_ratio=vol_ratio,
+                momentum=momentum,
+            )
 
-        # Size via Kelly — use LIVE bankroll, not static config
-        size = calc_kelly_size(
-            edge=edge,
-            market_price=mkt_price,
-            true_prob=true_prob,
-            entry_window=sig.entry_window,
-            bankroll=paper.bankroll,
-        )
-        if size < 1.0:
-            log.debug("[BOT] Size $%.2f too small, skipping", size)
-            continue
+            # Gate check
+            trade, side, edge, mkt_price, true_prob = should_trade(sig)
+            if not trade:
+                continue
 
-        log.info(
-            "[BOT] 🎯 %s %s %s | window=%s | edge=%.2f price=%.2f $%.2f | RSI=%.0f vol=%.1f",
-            side, asset, market.condition_id[:12], sig.entry_window,
-            edge, mkt_price, size, rsi, vol_ratio,
-        )
+            token_id = market.token_id_up if side == "UP" else market.token_id_down
 
-        # Paper trade entry + track for resolution
-        paper_entry = paper.record_entry(
-            asset=asset,
-            market_id=market.condition_id,
-            side=side,
-            market_price=mkt_price,
-            true_prob=true_prob,
-            edge=edge,
-            size_usd=size,
-            entry_window=sig.entry_window,
-        )
-        _pending_trades.append({
-            "paper_entry": paper_entry,
-            "asset": asset,
-            "side": side,
-            "candle_open": candle_data["open_price"],
-            "end_time": market.end_time,
-        })
-        _trade_count += 1
+            # Risk check
+            current_bankroll = paper.bankroll
+            if not risk_mgr.check_all(token_id, edge, true_prob, current_bankroll, daily_pnl):
+                continue
 
-        # Execute (split into micro-orders)
-        results = await executor.execute_split_order(
-            token_id=token_id,
-            price=mkt_price,
-            total_size=size,
-        )
+            # Size via Kelly — use LIVE bankroll
+            size = calc_kelly_size(
+                edge=edge,
+                market_price=mkt_price,
+                true_prob=true_prob,
+                entry_window=sig.entry_window,
+                bankroll=current_bankroll,
+            )
+            
+            if size < 1.0:
+                continue
 
-        if results:
+            log.info(
+                "[BOT] 🎯 %s %s %s | window=%s | edge=%.2f price=%.2f $%.2f | RSI=%.0f vol=%.1f",
+                side, asset, market.condition_id[:12], sig.entry_window,
+                edge, mkt_price, size, rsi, vol_ratio,
+            )
+
+            # Paper trade entry + track for resolution
+            paper_entry = paper.record_entry(
+                asset=asset,
+                market_id=market.condition_id,
+                side=side,
+                market_price=mkt_price,
+                true_prob=true_prob,
+                edge=edge,
+                size_usd=size,
+                entry_window=sig.entry_window,
+            )
+            _pending_trades.append({
+                "paper_entry": paper_entry,
+                "asset": asset,
+                "side": side,
+                "candle_open": candle_data["open_price"],
+                "end_time": market.end_time,
+            })
+            _trade_count += 1
+
+            # Execution
+            if not DRY_RUN:
+                asyncio.create_task(
+                    executor.execute_split_order(token_id, mkt_price, size)
+                )
+
+            # Record entry in risk manager against the asset (not condition id, to avoid duplicates across loops)
             risk_mgr.record_entry(token_id)
+
+        # Sleep a tiny amount to prevent CPU spin, effectively polling local data at 2 Hz
+        await asyncio.sleep(0.5)
 
 
 async def main():
@@ -230,24 +251,25 @@ async def main():
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    # Start price feeds + CLOB WS in background
+    # Start background tasks
     feed_task = asyncio.create_task(price_feed.start())
     clob_task = asyncio.create_task(clob_stream.start())
+    scanner_task = asyncio.create_task(background_market_scanner())
 
     # Wait for initial data
     log.info("[BOT] Waiting 8s for initial price data…")
     await asyncio.sleep(8)
+    
+    # Start the fast evaluation loop
+    bot_task = asyncio.create_task(
+        bot_loop(price_feed, indicators, risk_mgr, paper, clob_stream, executor)
+    )
 
     _start_time = _time.time()
     last_hourly = _start_time
 
     try:
         while not _shutdown:
-            try:
-                await bot_loop()
-            except Exception as exc:
-                log.error("[BOT] Loop error: %s", exc, exc_info=True)
-
             # Hourly stats
             now = _time.time()
             if now - last_hourly >= 3600:
@@ -258,12 +280,14 @@ async def main():
                 )
                 last_hourly = now
 
-            await asyncio.sleep(SCAN_INTERVAL_SEC)
+            await asyncio.sleep(10)
     finally:
         # Resolve remaining trades
         await resolve_pending_trades()
         feed_task.cancel()
         clob_task.cancel()
+        scanner_task.cancel()
+        bot_task.cancel()
         elapsed = (_time.time() - _start_time) / 3600
         log.info("=" * 60)
         log.info("[BOT] FINAL RESULTS (%.1fh)", elapsed)
