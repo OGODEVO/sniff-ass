@@ -68,7 +68,7 @@ LATE_WINDOW_START: float = 3.0      # late window = last 3 min of candle
 SCAN_INTERVAL_SEC: int = 30         # main loop frequency
 
 # ── Order Splitting ────────────────────────────────────────────
-ORDER_SPLIT_COUNT: int = 3          # number of micro-orders (lower for $100 bankroll to hit $5 min)
+ORDER_SPLIT_COUNT: int = 1          # single order (no splitting needed for $5-15 trades)
 ORDER_DELAY_MIN: float = 0.5       # seconds between micro-orders
 ORDER_DELAY_MAX: float = 1.0
 
