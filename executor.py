@@ -106,10 +106,13 @@ class Executor:
     # ── Single order placement ────────────────────────────────
 
     def _place_single(self, token_id: str, price: float, size_usd: float) -> dict | None:
-        """Place a single FOK order."""
+        """Place a single GTC order with spread-crossing premium."""
         if price <= 0:
             return None
-        price = round(price, 2)  # Polymarket: max 2 decimal places on price
+        # Cross the spread: pay 2¢ above mid-price to ensure instant fill
+        price = round(price + 0.02, 2)
+        if price > 0.99:
+            price = 0.99
         num_shares = int(size_usd / price)  # Polymarket: shares must be whole numbers
         if num_shares < 1:
             return None
