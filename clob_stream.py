@@ -3,7 +3,7 @@ CLOB WebSocket stream — real-time orderbook prices from Polymarket.
 
 Endpoint: wss://ws-subscriptions-clob.polymarket.com/ws/market
 No authentication required for market data.
-Subscribes to token IDs and receives live price_change + book events.
+Subscribes to token IDs and maintains a local L2 order book cache.
 """
 
 from __future__ import annotations
@@ -20,13 +20,13 @@ CLOB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
 class ClobStream:
     """
-    Maintains a real-time cache of best bid/ask prices for subscribed tokens
+    Maintains a real-time cache of the L2 order book for subscribed tokens
     via the Polymarket CLOB WebSocket.
     """
 
     def __init__(self) -> None:
-        # token_id → {"best_bid": float, "best_ask": float}
-        self._prices: dict[str, dict[str, float]] = {}
+        # token_id → {"bids": {price: size}, "asks": {price: size}}
+        self._books: dict[str, dict[str, dict[float, float]]] = {}
         self._subscribed_tokens: set[str] = set()
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._connected = False
@@ -35,20 +35,22 @@ class ClobStream:
 
     def get_best_ask(self, token_id: str) -> float | None:
         """Return cached best ask price for a token, or None if unknown."""
-        data = self._prices.get(token_id)
-        if data and data.get("best_ask", 0) > 0:
-            return data["best_ask"]
-        return None
+        book = self._books.get(token_id)
+        if not book or not book["asks"]:
+            return None
+        return min(book["asks"].keys())
 
     def get_best_bid(self, token_id: str) -> float | None:
         """Return cached best bid price for a token, or None if unknown."""
-        data = self._prices.get(token_id)
-        if data and data.get("best_bid", 0) > 0:
-            return data["best_bid"]
-        return None
+        book = self._books.get(token_id)
+        if not book or not book["bids"]:
+            return None
+        return max(book["bids"].keys())
 
     def has_price(self, token_id: str) -> bool:
-        return token_id in self._prices
+        """Returns True if the order book has both bids and asks."""
+        book = self._books.get(token_id)
+        return bool(book and book["bids"] and book["asks"])
 
     # ── Subscription management ───────────────────────────────
 
@@ -80,8 +82,12 @@ class ClobStream:
 
     # ── Message processing ────────────────────────────────────
 
+    def _ensure_book(self, asset_id: str) -> None:
+        if asset_id not in self._books:
+            self._books[asset_id] = {"bids": {}, "asks": {}}
+
     def _process_message(self, msg: dict) -> None:
-        """Parse incoming WS message and update price cache."""
+        """Parse incoming WS message and update full L2 book cache."""
         event_type = msg.get("event_type", "")
 
         if event_type == "book":
@@ -89,40 +95,54 @@ class ClobStream:
             asset_id = msg.get("asset_id", "")
             if not asset_id:
                 return
+            self._ensure_book(asset_id)
+            
+            # Clear old book on a full snapshot
+            self._books[asset_id]["bids"].clear()
+            self._books[asset_id]["asks"].clear()
+            
             bids = msg.get("bids", [])
             asks = msg.get("asks", [])
-            best_bid = float(bids[0].get("price", 0)) if bids else 0
-            best_ask = float(asks[0].get("price", 0)) if asks else 0
-            self._prices[asset_id] = {"best_bid": best_bid, "best_ask": best_ask}
+            
+            for b_level in bids:
+                p = float(b_level.get("price", 0))
+                s = float(b_level.get("size", 0))
+                if s > 0:
+                    self._books[asset_id]["bids"][p] = s
+                    
+            for a_level in asks:
+                p = float(a_level.get("price", 0))
+                s = float(a_level.get("size", 0))
+                if s > 0:
+                    self._books[asset_id]["asks"][p] = s
+                    
+            best_bid = self.get_best_bid(asset_id) or 0.0
+            best_ask = self.get_best_ask(asset_id) or 0.0
             log.debug("[CLOB_WS] Book %s: bid=%.4f ask=%.4f", asset_id[:12], best_bid, best_ask)
 
         elif event_type == "price_change":
-            # Incremental price update
+            # Incremental L2 update
             changes = msg.get("changes", [])
             for change in changes:
                 asset_id = change.get("asset_id", "")
                 if not asset_id:
                     continue
-                if asset_id not in self._prices:
-                    self._prices[asset_id] = {"best_bid": 0, "best_ask": 0}
+                self._ensure_book(asset_id)
+                
                 price = float(change.get("price", 0))
                 side = change.get("side", "").upper()
-                if side == "BUY" and price > 0:
-                    self._prices[asset_id]["best_bid"] = price
-                elif side == "SELL" and price > 0:
-                    self._prices[asset_id]["best_ask"] = price
+                size = float(change.get("size", 0))
+                
+                book_side = self._books[asset_id]["bids"] if side == "BUY" else self._books[asset_id]["asks"]
+                
+                if size == 0:
+                    book_side.pop(price, None)
+                else:
+                    book_side[price] = size
 
         elif event_type == "last_trade_price":
-            asset_id = msg.get("asset_id", "")
-            price = float(msg.get("price", 0))
-            if asset_id and price > 0:
-                if asset_id not in self._prices:
-                    self._prices[asset_id] = {"best_bid": 0, "best_ask": 0}
-                # Use last trade as fallback for both
-                if self._prices[asset_id]["best_ask"] == 0:
-                    self._prices[asset_id]["best_ask"] = price
-                if self._prices[asset_id]["best_bid"] == 0:
-                    self._prices[asset_id]["best_bid"] = price
+            # Just informational, last trade price doesn't affect the limit order book resting liquidity
+            pass
 
     # ── Main stream loop ──────────────────────────────────────
 
@@ -166,4 +186,6 @@ class ClobStream:
                 self._connected = False
                 self._ws = None
                 log.warning("[CLOB_WS] Disconnected: %s — reconnecting in 3s", exc)
+                # Clear orderbook on disconnect because it will be stale
+                self._books.clear()
                 await asyncio.sleep(3)
