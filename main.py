@@ -69,7 +69,8 @@ async def resolve_pending_trades():
 
         # Market has ended — check final price vs candle open
         asset = trade["asset"]
-        current_price = price_feed.get_price(asset)
+        # MUST use Chainlink oracle for resolution to match Polymarket exact payouts
+        current_price = price_feed.get_chainlink_price(asset)
         open_price = trade["candle_open"]
 
         if current_price <= 0 or open_price <= 0:

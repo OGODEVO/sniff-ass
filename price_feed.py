@@ -110,6 +110,10 @@ class PriceFeed:
             return ct_price
         return cl_price
 
+    def get_chainlink_price(self, asset: str) -> float:
+        """Strictly get the last known Chainlink price (no Binance fallback)."""
+        return self._chainlink_prices.get(asset, 0.0)
+
     # ── Chainlink polling (all assets) ────────────────────────
 
     async def poll_chainlink(self, interval: float = None) -> None:
