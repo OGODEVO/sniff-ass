@@ -99,6 +99,11 @@ async def background_market_scanner() -> None:
         try:
             markets = await scan_active_markets()
             _cached_markets = markets
+            token_ids: list[str] = []
+            for market in markets:
+                token_ids.extend([market.token_id_up, market.token_id_down])
+            if token_ids:
+                await clob_stream.subscribe(token_ids)
         except Exception as exc:
             log.error("[SCANNER] Error fetching markets: %s", exc)
         await asyncio.sleep(SCAN_INTERVAL_SEC)
