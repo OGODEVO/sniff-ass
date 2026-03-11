@@ -170,23 +170,36 @@ async def bot_loop(
                     asset, market.timeframe_min, market.condition_id[:12],
                 )
 
-                # ONLY use CLOB WS prices (real-time). Fast loop cannot block on REST calls.
-                # If WS has no price, we skip. We do not fallback to Gamma here to avoid stale edges.
+                # Prefer CLOB WS prices for signal construction. In paper mode, allow a
+                # Gamma fallback so simulated trades are not blocked on WS book warmup.
                 ws_up = clob_stream.get_best_ask(market.token_id_up)
                 ws_down = clob_stream.get_best_ask(market.token_id_down)
 
-                if ws_up is None or ws_down is None:
-                    log.warning(
-                        "[BOT] No CLOB ask for %s %sm (up=%s down=%s) - skipping market",
-                        asset,
-                        market.timeframe_min,
-                        market.token_id_up[:12] if ws_up is None else "ok",
-                        market.token_id_down[:12] if ws_down is None else "ok",
-                    )
-                    continue
-
-                mkt_up = ws_up
-                mkt_down = ws_down
+                if DRY_RUN:
+                    mkt_up = ws_up if ws_up is not None else market.outcome_price_up
+                    mkt_down = ws_down if ws_down is not None else market.outcome_price_down
+                    if ws_up is None or ws_down is None:
+                        log.info(
+                            "[BOT] Paper mode fallback for %s %sm (up=%s down=%s) | using Gamma prices up=%.2f down=%.2f",
+                            asset,
+                            market.timeframe_min,
+                            "gamma" if ws_up is None else "ws",
+                            "gamma" if ws_down is None else "ws",
+                            mkt_up,
+                            mkt_down,
+                        )
+                else:
+                    if ws_up is None or ws_down is None:
+                        log.warning(
+                            "[BOT] No CLOB ask for %s %sm (up=%s down=%s) - skipping market",
+                            asset,
+                            market.timeframe_min,
+                            market.token_id_up[:12] if ws_up is None else "ok",
+                            market.token_id_down[:12] if ws_down is None else "ok",
+                        )
+                        continue
+                    mkt_up = ws_up
+                    mkt_down = ws_down
 
                 if mkt_up <= 0.01 or mkt_down <= 0.01 or mkt_up >= 0.99 or mkt_down >= 0.99:
                     log.warning(
