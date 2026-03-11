@@ -106,14 +106,17 @@ class Executor:
     # ── Single order placement ────────────────────────────────
 
     def _place_single(self, token_id: str, price: float, size_usd: float) -> dict | None:
-        """Place a single GTC order with spread-crossing premium."""
-        if price <= 0:
+        """Place a single GTC order at the current executable CLOB ask."""
+        client = self._ensure_client()
+        live_price = self.get_best_price(token_id, "BUY")
+        if live_price is None or live_price <= 0:
+            log.warning("[EXECUTOR] ⛔ No live CLOB BUY price for %s", token_id[:16])
             return None
-        if price > 0.85:
-            log.warning("[EXECUTOR] ⛔ CLOB ask %.2f too high — skipping", price)
+        if live_price > 0.85:
+            log.warning("[EXECUTOR] ⛔ CLOB ask %.2f too high — skipping", live_price)
             return None
-        # Cross the spread more aggressively, but never chase near-resolved contracts.
-        price = round(min(price + 0.03, 0.97), 2)
+
+        price = round(live_price, 2)
         num_shares = int(size_usd / price)  # Polymarket: shares must be whole numbers
         if num_shares < 1:
             return None
@@ -126,7 +129,6 @@ class Executor:
             return {"dry_run": True, "token_id": token_id, "price": price, "size": size_usd}
 
         try:
-            client = self._ensure_client()
             order = client.create_order(OrderArgs(
                 price=price,
                 size=num_shares,
