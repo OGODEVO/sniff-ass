@@ -182,6 +182,11 @@ class ClobStream:
                         except json.JSONDecodeError:
                             continue
 
+            except asyncio.CancelledError:
+                self._connected = False
+                self._ws = None
+                log.info("[CLOB_WS] Cancelled")
+                raise
             except (websockets.ConnectionClosed, Exception) as exc:
                 self._connected = False
                 self._ws = None
