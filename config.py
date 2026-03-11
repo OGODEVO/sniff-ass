@@ -59,8 +59,8 @@ MAX_DRAWDOWN_PCT: float = 0.25      # halt if drawdown from peak > 25%
 # ── Price Caps (window-specific) ──────────────────────────────
 MAX_PRICE_EARLY: float = 0.35       # early window: only buy under 35¢
 MAX_PRICE_LATE: float = 0.99        # late window: can buy up to 99¢
-MIN_PRICE_EARLY: float = 0.15       # don't buy extreme longshots < 15¢
-MIN_PRICE_LATE: float = 0.15
+MIN_PRICE_EARLY: float = 0.40       # don't buy extreme longshots < 40¢
+MIN_PRICE_LATE: float = 0.40
 
 # ── Timing Windows ─────────────────────────────────────────────
 CANDLE_DURATION_MIN: int = 15
