@@ -109,10 +109,11 @@ class Executor:
         """Place a single GTC order with spread-crossing premium."""
         if price <= 0:
             return None
-        # Cross the spread: pay 2¢ above mid-price to ensure instant fill
-        price = round(price + 0.02, 2)
-        if price > 0.99:
-            price = 0.99
+        if price > 0.85:
+            log.warning("[EXECUTOR] ⛔ CLOB ask %.2f too high — skipping", price)
+            return None
+        # Cross the spread more aggressively, but never chase near-resolved contracts.
+        price = round(min(price + 0.03, 0.97), 2)
         num_shares = int(size_usd / price)  # Polymarket: shares must be whole numbers
         if num_shares < 1:
             return None
