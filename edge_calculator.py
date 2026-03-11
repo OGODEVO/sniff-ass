@@ -1,9 +1,9 @@
 """
 Edge calculator — estimates true probability, computes edge, and decides whether to trade.
 
-Uses the V2 formula from the March 2026 research paper:
-  direction_strength = price_delta_pct * 80
-  certainty_boost    = direction_strength * time_weight * 0.5
+Uses the current capped formula:
+  direction_strength = min(price_delta_pct * 25, 0.20)
+  certainty_boost    = direction_strength * time_weight * 0.3
   raw_prob_up        = 0.50 + direction_strength + certainty_boost
 """
 
@@ -80,9 +80,9 @@ def calc_true_probability(
     timeframe_min: int = 15,
 ) -> tuple[float, float]:
     """
-    V2 probability formula:
-      direction_strength = pct_move * 80   (each 0.1% ≈ 8% prob shift)
-      certainty_boost    = direction_strength * time_weight * 0.5
+    Capped probability formula:
+      direction_strength = min(pct_move * 25, 0.20)
+      certainty_boost    = direction_strength * time_weight * 0.3
       raw_prob_up        = 0.50 + direction_strength + certainty_boost
     """
     if candle_open_price <= 0:
@@ -91,8 +91,8 @@ def calc_true_probability(
     price_delta_pct = (current_price - candle_open_price) / candle_open_price
     time_weight = time_elapsed_min / timeframe_min  # 0.0 at start → 1.0 at end
 
-    direction_strength = price_delta_pct * 80
-    certainty_boost = direction_strength * time_weight * 0.5
+    direction_strength = clamp(price_delta_pct * 25, -0.20, 0.20)
+    certainty_boost = direction_strength * time_weight * 0.3
 
     raw_prob_up = 0.50 + direction_strength + certainty_boost
     prob_up = clamp(raw_prob_up, 0.01, 0.99)
