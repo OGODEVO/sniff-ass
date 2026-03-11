@@ -9,9 +9,11 @@ Binance kline_1m streams feed into CandleTracker + Indicators.
 import asyncio
 import json
 import time
+from datetime import datetime, timezone
 
 import websockets
 from web3 import Web3
+from web3.middleware import ExtraDataToPOAMiddleware
 
 from candle_tracker import CandleTracker
 from config import (
@@ -69,6 +71,8 @@ class PriceFeed:
         self._aggregators: dict[str, any] = {}
         self._decimals: dict[str, int] = {}
         self._chainlink_initialized = False
+        self._historical_price_cache: dict[tuple[str, int], float] = {}
+        self._block_ts_cache: dict[int, int] = {}
 
     def _init_chainlink(self) -> None:
         """Lazy-init Web3 + Chainlink contracts (called on first poll)."""
@@ -78,6 +82,7 @@ class PriceFeed:
 
         log.info("[PRICE_FEED] Initialising Chainlink aggregators…")
         self._w3 = Web3(Web3.HTTPProvider(POLYGON_RPC_URL, request_kwargs={"timeout": 10}))
+        self._w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
 
         for asset, addr in CHAINLINK_AGGREGATORS.items():
             try:
@@ -93,9 +98,6 @@ class PriceFeed:
                 self._decimals[asset] = 8
 
     # ── Public getters ────────────────────────────────────────
-
-    def get_chainlink_price(self, asset: str) -> float:
-        return self._chainlink_prices.get(asset, 0.0)
 
     def get_price(self, asset: str) -> float:
         """Best available price — prefer Chainlink, fall back to candle tracker."""
@@ -113,6 +115,82 @@ class PriceFeed:
     def get_chainlink_price(self, asset: str) -> float:
         """Strictly get the last known Chainlink price (no Binance fallback)."""
         return self._chainlink_prices.get(asset, 0.0)
+
+    def _get_block_timestamp(self, block_number: int) -> int:
+        cached = self._block_ts_cache.get(block_number)
+        if cached is not None:
+            return cached
+        if self._w3 is None:
+            return 0
+        block = self._w3.eth.get_block(block_number)
+        ts = int(block["timestamp"])
+        self._block_ts_cache[block_number] = ts
+        return ts
+
+    def _find_block_at_or_before(self, target_ts: int) -> int | None:
+        if self._w3 is None:
+            return None
+
+        latest_block = self._w3.eth.block_number
+        latest_ts = self._get_block_timestamp(latest_block)
+        if target_ts >= latest_ts:
+            return latest_block
+
+        lo = 1
+        hi = latest_block
+        best: int | None = None
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            mid_ts = self._get_block_timestamp(mid)
+            if mid_ts <= target_ts:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return best
+
+    def get_chainlink_price_at(self, asset: str, target_time: datetime) -> float:
+        """
+        Return the Chainlink price whose round was already published at `target_time`.
+        This aligns candle opens/resolution to Polymarket's oracle-timestamp rulebook.
+        """
+        self._init_chainlink()
+        contract = self._aggregators.get(asset)
+        decimals = self._decimals.get(asset, 8)
+        if contract is None or self._w3 is None:
+            return 0.0
+
+        if target_time.tzinfo is None:
+            target_time = target_time.replace(tzinfo=timezone.utc)
+        target_ts = int(target_time.timestamp())
+        cache_key = (asset, target_ts)
+        cached = self._historical_price_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        start_block = self._find_block_at_or_before(target_ts)
+        if start_block is None:
+            return 0.0
+
+        block_number = start_block
+        for _ in range(256):
+            try:
+                round_data = contract.functions.latestRoundData().call(block_identifier=block_number)
+            except Exception:
+                break
+
+            raw_price = int(round_data[1])
+            updated_at = int(round_data[3])
+            if raw_price > 0 and updated_at > 0 and updated_at <= target_ts:
+                price = raw_price / (10 ** decimals)
+                self._historical_price_cache[cache_key] = price
+                return price
+
+            if block_number <= 1:
+                break
+            block_number = max(1, block_number - 64)
+
+        return 0.0
 
     # ── Chainlink polling (all assets) ────────────────────────
 
@@ -186,6 +264,9 @@ class PriceFeed:
                                 asset, close, volume,
                             )
 
+            except asyncio.CancelledError:
+                log.info("[PRICE_FEED] Binance kline WS cancelled")
+                raise
             except (websockets.ConnectionClosed, Exception) as exc:
                 log.warning("[PRICE_FEED] Binance WS error: %s — reconnecting in 5s", exc)
                 await asyncio.sleep(5)
