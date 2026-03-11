@@ -172,16 +172,16 @@ async def bot_loop(
 
                 if ws_up is None or ws_down is None:
                     log.warning(
-                        "[BOT] No CLOB ask for %s %sm (up=%s down=%s) - waiting for book",
+                        "[BOT] No CLOB ask for %s %sm (up=%s down=%s) - skipping market",
                         asset,
                         market.timeframe_min,
                         market.token_id_up[:12] if ws_up is None else "ok",
                         market.token_id_down[:12] if ws_down is None else "ok",
                     )
+                    continue
 
-                # Fall back to Gamma prices until the CLOB book is populated.
-                mkt_up = ws_up if ws_up is not None else market.outcome_price_up
-                mkt_down = ws_down if ws_down is not None else market.outcome_price_down
+                mkt_up = ws_up
+                mkt_down = ws_down
 
                 if mkt_up <= 0.01 or mkt_down <= 0.01 or mkt_up >= 0.99 or mkt_down >= 0.99:
                     log.warning(
@@ -189,9 +189,6 @@ async def bot_loop(
                         asset, market.timeframe_min, mkt_up, mkt_down,
                     )
                     continue
-
-                if ws_up is None or ws_down is None:
-                    log.debug("[BOT] Using Gamma fallback prices for %s (WS book not ready)", asset)
 
                 # Build full signal
                 sig = build_signal(
