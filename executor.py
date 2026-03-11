@@ -16,6 +16,7 @@ from config import (
     CHAIN_ID,
     CLOB_HOST,
     DRY_RUN,
+    MAX_PRICE_LATE,
     ORDER_DELAY_MAX,
     ORDER_DELAY_MIN,
     ORDER_SPLIT_COUNT,
@@ -25,12 +26,15 @@ from config import (
 from logger import log
 
 
+MIN_ORDER_USD: float = 5.0
+
+
 def split_order(total_size: float, num_splits: int = ORDER_SPLIT_COUNT) -> list[float]:
     """
     Split a large order into micro-orders with slight random jitter.
     Enforces Polymarket's $5.00 minimum order size constraint.
     """
-    if total_size < 5.0:
+    if total_size < MIN_ORDER_USD:
         return [round(total_size, 2)]
 
     # Reduce splits to ensure chunks average at least ~$5.50
@@ -47,14 +51,14 @@ def split_order(total_size: float, num_splits: int = ORDER_SPLIT_COUNT) -> list[
     for _ in range(num_splits - 1):
         jitter = random.uniform(0.85, 1.15)
         size = round(base_size * jitter, 2)
-        # Ensure size is at least $5, but don't leave remaining < $5
-        size = max(5.0, min(size, remaining - 5.0))
-        if size < 5.0:
+        # Ensure size is at least the venue minimum, but don't leave remaining below it.
+        size = max(MIN_ORDER_USD, min(size, remaining - MIN_ORDER_USD))
+        if size < MIN_ORDER_USD:
             break
         orders.append(size)
         remaining -= size
 
-    if remaining >= 5.0:
+    if remaining >= MIN_ORDER_USD:
         orders.append(round(remaining, 2))
     elif orders:
         orders[-1] = round(orders[-1] + remaining, 2)
@@ -112,21 +116,30 @@ class Executor:
         if live_price is None or live_price <= 0:
             log.warning("[EXECUTOR] ⛔ No live CLOB BUY price for %s", token_id[:16])
             return None
-        if live_price > 0.85:
-            log.warning("[EXECUTOR] ⛔ CLOB ask %.2f too high — skipping", live_price)
+        if live_price > MAX_PRICE_LATE:
+            log.warning("[EXECUTOR] ⛔ CLOB ask %.2f > configured max %.2f — skipping", live_price, MAX_PRICE_LATE)
             return None
 
         price = round(live_price, 2)
         num_shares = int(size_usd / price)  # Polymarket: shares must be whole numbers
         if num_shares < 1:
             return None
+        order_value = round(num_shares * price, 2)
+        if order_value < MIN_ORDER_USD:
+            log.warning(
+                "[EXECUTOR] ⛔ Order value $%.2f below venue minimum $%.2f for %s",
+                order_value,
+                MIN_ORDER_USD,
+                token_id[:16],
+            )
+            return None
 
         if DRY_RUN:
             log.info(
                 "[EXECUTOR] 🧪 DRY RUN — BUY %s | price=%.2f $%.2f (%d shares)",
-                token_id[:16], price, size_usd, num_shares,
+                token_id[:16], price, order_value, num_shares,
             )
-            return {"dry_run": True, "token_id": token_id, "price": price, "size": size_usd}
+            return {"dry_run": True, "token_id": token_id, "price": price, "size": order_value}
 
         try:
             order = client.create_order(OrderArgs(

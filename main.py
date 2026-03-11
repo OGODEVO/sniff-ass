@@ -244,28 +244,28 @@ async def bot_loop(
                     edge, mkt_price, size, rsi, vol_ratio,
                 )
 
-                # Paper trade entry + track for resolution
-                paper_entry = paper.record_entry(
-                    asset=asset,
-                    market_id=market.condition_id,
-                    side=side,
-                    market_price=mkt_price,
-                    true_prob=true_prob,
-                    edge=edge,
-                    size_usd=size,
-                    entry_window=sig.entry_window,
-                )
-                _pending_trades.append({
-                    "paper_entry": paper_entry,
-                    "asset": asset,
-                    "side": side,
-                    "candle_open": open_price,
-                    "end_time": market.end_time,
-                })
-                _trade_count += 1
-
-                # Execution: live orders must use a real CLOB quote, not a fallback price.
-                if not DRY_RUN:
+                if DRY_RUN:
+                    # Paper trade entry + track for resolution
+                    paper_entry = paper.record_entry(
+                        asset=asset,
+                        market_id=market.condition_id,
+                        side=side,
+                        market_price=mkt_price,
+                        true_prob=true_prob,
+                        edge=edge,
+                        size_usd=size,
+                        entry_window=sig.entry_window,
+                    )
+                    _pending_trades.append({
+                        "paper_entry": paper_entry,
+                        "asset": asset,
+                        "side": side,
+                        "candle_open": open_price,
+                        "end_time": market.end_time,
+                    })
+                    _trade_count += 1
+                else:
+                    # Live orders must use a real CLOB quote, not a fallback price.
                     exec_price = ws_exec_price if ws_exec_price is not None else executor.get_best_price(token_id, "BUY")
                     if exec_price is None or exec_price <= 0:
                         log.warning(
@@ -276,6 +276,7 @@ async def bot_loop(
                     asyncio.create_task(
                         executor.execute_split_order(token_id, exec_price, size)
                     )
+                    _trade_count += 1
 
                 # Record entry in risk manager against the asset (not condition id, to avoid duplicates across loops)
                 risk_mgr.record_entry(token_id)

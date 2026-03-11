@@ -57,9 +57,9 @@ DAILY_LOSS_LIMIT_PCT: float = 0.15  # halt if daily loss exceeds 15%
 MAX_DRAWDOWN_PCT: float = 0.25      # halt if drawdown from peak > 25%
 
 # ── Price Caps (window-specific) ──────────────────────────────
-MAX_PRICE_EARLY: float = 0.35       # early window: only buy under 35¢
+MAX_PRICE_EARLY: float = 0.65       # early window: allow mid-range prices while avoiding near-resolution pricing
 MAX_PRICE_LATE: float = 0.99        # late window: can buy up to 99¢
-MIN_PRICE_EARLY: float = 0.40       # don't buy extreme longshots < 40¢
+MIN_PRICE_EARLY: float = 0.30       # early window: avoid extreme longshots below 30¢
 MIN_PRICE_LATE: float = 0.40
 
 # ── Timing Windows ─────────────────────────────────────────────
