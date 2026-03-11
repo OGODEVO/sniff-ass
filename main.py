@@ -217,6 +217,7 @@ async def bot_loop(
                     continue
 
                 token_id = market.token_id_up if side == "UP" else market.token_id_down
+                ws_exec_price = ws_up if side == "UP" else ws_down
 
                 # Risk check
                 current_bankroll = paper.bankroll
@@ -261,10 +262,17 @@ async def bot_loop(
                 })
                 _trade_count += 1
 
-                # Execution
+                # Execution: live orders must use a real CLOB quote, not a fallback price.
                 if not DRY_RUN:
+                    exec_price = ws_exec_price if ws_exec_price is not None else executor.get_best_price(token_id, "BUY")
+                    if exec_price is None or exec_price <= 0:
+                        log.warning(
+                            "[BOT] No executable CLOB BUY price for %s %sm %s - skipping live order",
+                            asset, market.timeframe_min, market.condition_id[:12],
+                        )
+                        continue
                     asyncio.create_task(
-                        executor.execute_split_order(token_id, mkt_price, size)
+                        executor.execute_split_order(token_id, exec_price, size)
                     )
 
                 # Record entry in risk manager against the asset (not condition id, to avoid duplicates across loops)
