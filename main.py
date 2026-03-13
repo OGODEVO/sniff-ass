@@ -17,6 +17,16 @@ from clob_stream import ClobStream
 from config import (
     BANKROLL,
     DRY_RUN,
+    ENABLE_EARLY_ENTRY,
+    ENABLED_TIMEFRAMES_MIN,
+    EXECUTION_SLIPPAGE_BPS,
+    LATENCY_BUFFER_MIN,
+    LATENCY_SPREAD_MULT,
+    MAX_ENTRY_SPREAD,
+    MIN_NET_EDGE,
+    REQUIRE_BID_FOR_ENTRY,
+    TAKER_FEE_BPS,
+    PAPER_USE_GAMMA_FALLBACK,
     MIN_EDGE,
     SCAN_INTERVAL_SEC,
     SUPPORTED_ASSETS,
@@ -104,6 +114,27 @@ async def background_market_scanner() -> None:
                 token_ids.extend([market.token_id_up, market.token_id_down])
             if token_ids:
                 await clob_stream.subscribe(token_ids)
+            for market in markets:
+                ask_up = clob_stream.get_best_ask(market.token_id_up)
+                ask_down = clob_stream.get_best_ask(market.token_id_down)
+                if ask_up is not None and ask_down is not None:
+                    log.info(
+                        "[CLOB]      %s %sm %s | ask_up=%.4f ask_down=%.4f",
+                        market.asset,
+                        market.timeframe_min,
+                        market.slug,
+                        ask_up,
+                        ask_down,
+                    )
+                else:
+                    log.info(
+                        "[CLOB]      %s %sm %s | ask_up=%s ask_down=%s",
+                        market.asset,
+                        market.timeframe_min,
+                        market.slug,
+                        "n/a" if ask_up is None else f"{ask_up:.4f}",
+                        "n/a" if ask_down is None else f"{ask_down:.4f}",
+                    )
         except Exception as exc:
             log.error("[SCANNER] Error fetching markets: %s", exc)
         await asyncio.sleep(SCAN_INTERVAL_SEC)
@@ -175,10 +206,23 @@ async def bot_loop(
                 ws_up = clob_stream.get_best_ask(market.token_id_up)
                 ws_down = clob_stream.get_best_ask(market.token_id_down)
 
-                if DRY_RUN:
-                    mkt_up = ws_up if ws_up is not None else market.outcome_price_up
-                    mkt_down = ws_down if ws_down is not None else market.outcome_price_down
-                    if ws_up is None or ws_down is None:
+                missing_tokens: list[str] = []
+                if ws_up is None:
+                    missing_tokens.append(market.token_id_up)
+                if ws_down is None:
+                    missing_tokens.append(market.token_id_down)
+
+                if missing_tokens:
+                    await asyncio.gather(
+                        *(clob_stream.wait_for_book(token_id, timeout=5.0) for token_id in missing_tokens)
+                    )
+                    ws_up = clob_stream.get_best_ask(market.token_id_up)
+                    ws_down = clob_stream.get_best_ask(market.token_id_down)
+
+                if ws_up is None or ws_down is None:
+                    if DRY_RUN and PAPER_USE_GAMMA_FALLBACK:
+                        mkt_up = ws_up if ws_up is not None else market.outcome_price_up
+                        mkt_down = ws_down if ws_down is not None else market.outcome_price_down
                         log.info(
                             "[BOT] Paper mode fallback for %s %sm (up=%s down=%s) | using Gamma prices up=%.2f down=%.2f",
                             asset,
@@ -188,8 +232,7 @@ async def bot_loop(
                             mkt_up,
                             mkt_down,
                         )
-                else:
-                    if ws_up is None or ws_down is None:
+                    else:
                         log.warning(
                             "[BOT] No CLOB ask for %s %sm (up=%s down=%s) - skipping market",
                             asset,
@@ -198,6 +241,7 @@ async def bot_loop(
                             market.token_id_down[:12] if ws_down is None else "ok",
                         )
                         continue
+                else:
                     mkt_up = ws_up
                     mkt_down = ws_down
 
@@ -234,6 +278,49 @@ async def bot_loop(
                 token_id = market.token_id_up if side == "UP" else market.token_id_down
                 ws_exec_price = ws_up if side == "UP" else ws_down
 
+                if ws_exec_price is None or ws_exec_price <= 0:
+                    log.debug(
+                        "[EXEC] Skip %s %sm %s | no executable ask for %s side",
+                        asset, market.timeframe_min, market.condition_id[:12], side,
+                    )
+                    continue
+
+                ws_exec_bid = clob_stream.get_best_bid(token_id)
+                if REQUIRE_BID_FOR_ENTRY and (ws_exec_bid is None or ws_exec_bid <= 0):
+                    log.debug(
+                        "[EXEC] Skip %s %sm %s | missing bid for token %s",
+                        asset, market.timeframe_min, market.condition_id[:12], token_id[:12],
+                    )
+                    continue
+
+                spread = max(0.0, ws_exec_price - (ws_exec_bid or ws_exec_price))
+                if spread > MAX_ENTRY_SPREAD:
+                    log.debug(
+                        "[EXEC] Skip %s %sm %s | spread %.4f > max %.4f",
+                        asset, market.timeframe_min, market.condition_id[:12], spread, MAX_ENTRY_SPREAD,
+                    )
+                    continue
+
+                fee_cost = ws_exec_price * (TAKER_FEE_BPS / 10000.0)
+                slippage_cost = ws_exec_price * (EXECUTION_SLIPPAGE_BPS / 10000.0)
+                latency_cost = max(LATENCY_BUFFER_MIN, spread * LATENCY_SPREAD_MULT)
+                net_edge = edge - fee_cost - slippage_cost - latency_cost
+                if net_edge < MIN_NET_EDGE:
+                    log.debug(
+                        "[EXEC] Skip %s %sm %s | net_edge %.4f < min %.4f (edge=%.4f fee=%.4f slip=%.4f lat=%.4f spread=%.4f)",
+                        asset,
+                        market.timeframe_min,
+                        market.condition_id[:12],
+                        net_edge,
+                        MIN_NET_EDGE,
+                        edge,
+                        fee_cost,
+                        slippage_cost,
+                        latency_cost,
+                        spread,
+                    )
+                    continue
+
                 # Risk check
                 current_bankroll = paper.bankroll
                 if not risk_mgr.check_all(token_id, edge, true_prob, current_bankroll, daily_pnl):
@@ -241,7 +328,7 @@ async def bot_loop(
 
                 # Size via Kelly — use LIVE bankroll
                 size = calc_kelly_size(
-                    edge=edge,
+                    edge=net_edge,
                     market_price=mkt_price,
                     true_prob=true_prob,
                     entry_window=sig.entry_window,
@@ -252,9 +339,9 @@ async def bot_loop(
                     continue
 
                 log.info(
-                    "[BOT] 🎯 %s %s %sm %s | window=%s | edge=%.2f price=%.2f $%.2f | RSI=%.0f vol=%.1f",
+                    "[BOT] 🎯 %s %s %sm %s | window=%s | edge=%.3f net=%.3f spread=%.3f price=%.2f $%.2f | RSI=%.0f vol=%.1f",
                     side, asset, market.timeframe_min, market.condition_id[:12], sig.entry_window,
-                    edge, mkt_price, size, rsi, vol_ratio,
+                    edge, net_edge, spread, mkt_price, size, rsi, vol_ratio,
                 )
 
                 if DRY_RUN:
@@ -265,7 +352,7 @@ async def bot_loop(
                         side=side,
                         market_price=mkt_price,
                         true_prob=true_prob,
-                        edge=edge,
+                        edge=net_edge,
                         size_usd=size,
                         entry_window=sig.entry_window,
                     )
@@ -310,11 +397,22 @@ async def main():
     log.info("=" * 60)
     log.info("[BOT] Polymarket Crypto Bot V2")
     log.info("[BOT] Assets: %s", SUPPORTED_ASSETS)
+    log.info("[BOT] Timeframes: %s", ENABLED_TIMEFRAMES_MIN)
+    log.info("[BOT] Early entry enabled: %s", ENABLE_EARLY_ENTRY)
+    log.info(
+        "[BOT] Taker gates | bid_required=%s max_spread=%.3f fee=%sbps slip=%sbps min_net_edge=%.3f",
+        REQUIRE_BID_FOR_ENTRY,
+        MAX_ENTRY_SPREAD,
+        int(TAKER_FEE_BPS),
+        int(EXECUTION_SLIPPAGE_BPS),
+        MIN_NET_EDGE,
+    )
     log.info("[BOT] DRY_RUN=%s  BANKROLL=$%.2f  MIN_EDGE=%.2f", DRY_RUN, BANKROLL, MIN_EDGE)
     log.info("=" * 60)
 
     if DRY_RUN:
         log.info("[BOT] 🧪 DRY RUN MODE — no real orders will be placed")
+        log.info("[BOT] Paper Gamma fallback=%s", PAPER_USE_GAMMA_FALLBACK)
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)

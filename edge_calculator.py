@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from config import (
+    ENABLE_EARLY_ENTRY,
     MAX_PRICE_EARLY,
     MAX_PRICE_LATE,
     MIN_PRICE_EARLY,
@@ -26,7 +27,7 @@ from logger import log
 
 # ── Maximum edge sanity check ─────────────────────────────────
 # If our model diverges from the crowd by more than this, assume MODEL error
-MAX_EDGE: float = 0.45
+MAX_EDGE: float = 0.50
 
 # ── Correlation limit ─────────────────────────────────────────
 # Max assets betting the same direction in one scan cycle
@@ -80,22 +81,30 @@ def calc_true_probability(
     timeframe_min: int = 15,
 ) -> tuple[float, float]:
     """
-    Capped probability formula:
-      direction_strength = min(pct_move * 25, 0.20)
-      certainty_boost    = direction_strength * time_weight * 0.3
-      raw_prob_up        = 0.50 + direction_strength + certainty_boost
+    High-Win-Rate Probability Formula (Targets 80-90%)
+    Only takes strong conviction plays late in the window.
     """
     if candle_open_price <= 0:
         return 0.50, 0.50
 
+    # 1. How far has price moved as a percentage?
     price_delta_pct = (current_price - candle_open_price) / candle_open_price
-    time_weight = time_elapsed_min / timeframe_min  # 0.0 at start → 1.0 at end
+    
+    # 2. Convert raw percentage into "volatility units" (assuming 0.15% is a normal 15m move)
+    # A score of 1.0 means it moved a full normal amount. A score of 2.0 means it moved double.
+    move_score = price_delta_pct / 0.0015 
 
-    direction_strength = clamp(price_delta_pct * 25, -0.20, 0.20)
-    certainty_boost = direction_strength * time_weight * 0.3
+    # 3. Time weight: An early move means nothing. A late move means everything.
+    # We square the time elapsed so that minute 12 is vastly more important than minute 4.
+    time_weight = (time_elapsed_min / timeframe_min) ** 2 
 
-    raw_prob_up = 0.50 + direction_strength + certainty_boost
-    prob_up = clamp(raw_prob_up, 0.01, 0.99)
+    # 4. Calculate actual True Probability
+    # Base is coinflip (50%). We add our conviction score (move * time).
+    # We allow the model to hit 95% conviction instead of capping at 76%.
+    conviction = move_score * time_weight * 0.40  
+    raw_prob_up = 0.50 + conviction
+    
+    prob_up = clamp(raw_prob_up, 0.05, 0.95)
     prob_down = 1.0 - prob_up
 
     return round(prob_up, 4), round(prob_down, 4)
@@ -106,7 +115,7 @@ def _get_entry_window(elapsed: float, remaining: float, timeframe_min: int = 15)
     scale = timeframe_min / 15.0
     if remaining < MIN_TIME_REMAINING * scale:
         return "DEAD"  # too close to resolution
-    if elapsed <= MAX_TIME_ELAPSED_EARLY * scale:
+    if ENABLE_EARLY_ENTRY and elapsed <= MAX_TIME_ELAPSED_EARLY * scale:
         return "EARLY"
     if remaining <= LATE_WINDOW_START * scale:
         return "LATE"

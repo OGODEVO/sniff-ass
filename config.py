@@ -7,6 +7,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _parse_timeframes(value: str) -> list[int]:
+    """Parse comma-separated timeframe minutes (e.g. '15' or '5,15')."""
+    allowed = {5, 15}
+    parsed: list[int] = []
+    for part in value.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            tf = int(token)
+        except ValueError:
+            continue
+        if tf in allowed and tf not in parsed:
+            parsed.append(tf)
+    return parsed
+
 # ── Wallet / Auth ──────────────────────────────────────────────
 PRIVATE_KEY: str = os.getenv("PRIVATE_KEY", "")
 PROXY_ADDRESS: str = os.getenv("POLYMARKET_PROXY_ADDRESS", "")
@@ -18,6 +35,9 @@ GAMMA_HOST = "https://gamma-api.polymarket.com"
 
 # ── Supported Assets ──────────────────────────────────────────
 SUPPORTED_ASSETS = ["BTC", "ETH", "SOL", "XRP"]
+ENABLED_TIMEFRAMES_MIN: list[int] = _parse_timeframes(
+    os.getenv("ENABLED_TIMEFRAMES_MIN", "15")
+) or [15]
 
 # Binance WebSocket streams (kline_1m for RSI + volume)
 BINANCE_WS_BASE = os.getenv("BINANCE_WS_BASE", "wss://data-stream.binance.vision:9443/stream?streams=")
@@ -46,27 +66,38 @@ CHAINLINK_AGGREGATORS = {
 # ── Risk Management ───────────────────────────────────────────
 DRY_RUN: bool = os.getenv("DRY_RUN", "true").lower() == "true"
 BANKROLL: float = float(os.getenv("BANKROLL", "1000.0"))
+PAPER_USE_GAMMA_FALLBACK: bool = os.getenv("PAPER_USE_GAMMA_FALLBACK", "false").lower() == "true"
+ENABLE_EARLY_ENTRY: bool = os.getenv("ENABLE_EARLY_ENTRY", "true").lower() == "true"
 
-MIN_EDGE: float = 0.06              # 6 cents min edge to allow more valid small-bankroll trades
-MIN_TRUE_PROB: float = 0.52         # allow earlier 5m/15m entries before certainty fully builds
-MAX_POSITION_PCT: float = 0.15      # 15% of bankroll per trade (needed for $100 bankroll)
-KELLY_FRACTION_EARLY: float = 0.40  # 40% Kelly for early window
-KELLY_FRACTION_LATE: float = 0.30   # 30% Kelly for late window (>80¢)
-MAX_SIMULTANEOUS: int = 3           # max concurrent positions (lower because positions are larger)
-DAILY_LOSS_LIMIT_PCT: float = 0.15  # halt if daily loss exceeds 15%
-MAX_DRAWDOWN_PCT: float = 0.25      # halt if drawdown from peak > 25%
+# Taker execution controls (all values are in price/probability terms, 0-1 scale)
+REQUIRE_BID_FOR_ENTRY: bool = os.getenv("REQUIRE_BID_FOR_ENTRY", "true").lower() == "true"
+MAX_ENTRY_SPREAD: float = float(os.getenv("MAX_ENTRY_SPREAD", "0.04"))          # 4c max bid-ask spread
+TAKER_FEE_BPS: float = float(os.getenv("TAKER_FEE_BPS", "20"))                  # 20 bps default
+EXECUTION_SLIPPAGE_BPS: float = float(os.getenv("EXECUTION_SLIPPAGE_BPS", "10"))# 10 bps default
+LATENCY_BUFFER_MIN: float = float(os.getenv("LATENCY_BUFFER_MIN", "0.005"))     # 0.5c minimum latency/risk buffer
+LATENCY_SPREAD_MULT: float = float(os.getenv("LATENCY_SPREAD_MULT", "0.5"))     # buffer grows with spread
+MIN_NET_EDGE: float = float(os.getenv("MIN_NET_EDGE", "0.015"))                 # require 1.5c edge after costs
+
+MIN_EDGE: float = float(os.getenv("MIN_EDGE", "0.045"))                 # balanced preset: 4.5 cents min modeled edge
+MIN_TRUE_PROB: float = float(os.getenv("MIN_TRUE_PROB", "0.52"))
+MAX_POSITION_PCT: float = float(os.getenv("MAX_POSITION_PCT", "0.10"))  # cap single trade risk to 10%
+KELLY_FRACTION_EARLY: float = float(os.getenv("KELLY_FRACTION_EARLY", "0.30"))
+KELLY_FRACTION_LATE: float = float(os.getenv("KELLY_FRACTION_LATE", "0.22"))
+MAX_SIMULTANEOUS: int = int(os.getenv("MAX_SIMULTANEOUS", "2"))
+DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "0.08"))
+MAX_DRAWDOWN_PCT: float = float(os.getenv("MAX_DRAWDOWN_PCT", "0.15"))
 
 # ── Price Caps (window-specific) ──────────────────────────────
 MAX_PRICE_EARLY: float = 0.65       # early window: allow mid-range prices while avoiding near-resolution pricing
-MAX_PRICE_LATE: float = 0.99        # late window: can buy up to 99¢
+MAX_PRICE_LATE: float = 0.95        # late window: pay up to 95¢ for near-certainties
 MIN_PRICE_EARLY: float = 0.30       # early window: avoid extreme longshots below 30¢
-MIN_PRICE_LATE: float = 0.40
+MIN_PRICE_LATE: float = 0.65        # late window: force the bot to ONLY buy heavy favorites (65¢+)
 
 # ── Timing Windows ─────────────────────────────────────────────
 CANDLE_DURATION_MIN: int = 15
-MIN_TIME_REMAINING: float = 1.5     # don't enter within 1.5 min of close
-MAX_TIME_ELAPSED_EARLY: float = 2.0 # early window closes at 2 min elapsed
-LATE_WINDOW_START: float = 3.0      # late window = last 3 min of candle
+MIN_TIME_REMAINING: float = float(os.getenv("MIN_TIME_REMAINING", "1.0"))   # avoid final 1 min
+MAX_TIME_ELAPSED_EARLY: float = float(os.getenv("MAX_TIME_ELAPSED_EARLY", "2.0"))
+LATE_WINDOW_START: float = float(os.getenv("LATE_WINDOW_START", "6.0"))      # late window starts 6 min before close
 SCAN_INTERVAL_SEC: int = 30         # main loop frequency
 
 # ── Order Splitting ────────────────────────────────────────────

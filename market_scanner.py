@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from config import GAMMA_HOST, SUPPORTED_ASSETS
+from config import ENABLED_TIMEFRAMES_MIN, GAMMA_HOST, SUPPORTED_ASSETS
 from logger import log
 
 # Slug pattern: btc-updown-5m-1773067500 / btc-updown-15m-1773067500
@@ -67,21 +67,23 @@ def _build_candidate_slugs() -> list[str]:
     now = int(time.time())
     slugs = []
 
-    aligned_15m = (now // 900) * 900
-    for offset in [-900, 0, 900, 1800]:
-        ts = aligned_15m + offset
-        for asset_lower in ["btc", "eth", "sol", "xrp"]:
-            asset_upper = _SLUG_ASSET_MAP[asset_lower]
-            if asset_upper in SUPPORTED_ASSETS:
-                slugs.append(f"{asset_lower}-updown-15m-{ts}")
+    if 15 in ENABLED_TIMEFRAMES_MIN:
+        aligned_15m = (now // 900) * 900
+        for offset in [-900, 0, 900, 1800]:
+            ts = aligned_15m + offset
+            for asset_lower in ["btc", "eth", "sol", "xrp"]:
+                asset_upper = _SLUG_ASSET_MAP[asset_lower]
+                if asset_upper in SUPPORTED_ASSETS:
+                    slugs.append(f"{asset_lower}-updown-15m-{ts}")
 
-    aligned_5m = (now // 300) * 300
-    for offset in [-300, 0, 300, 600]:
-        ts = aligned_5m + offset
-        for asset_lower in ["btc", "eth", "sol", "xrp"]:
-            asset_upper = _SLUG_ASSET_MAP[asset_lower]
-            if asset_upper in SUPPORTED_ASSETS:
-                slugs.append(f"{asset_lower}-updown-5m-{ts}")
+    if 5 in ENABLED_TIMEFRAMES_MIN:
+        aligned_5m = (now // 300) * 300
+        for offset in [-300, 0, 300, 600]:
+            ts = aligned_5m + offset
+            for asset_lower in ["btc", "eth", "sol", "xrp"]:
+                asset_upper = _SLUG_ASSET_MAP[asset_lower]
+                if asset_upper in SUPPORTED_ASSETS:
+                    slugs.append(f"{asset_lower}-updown-5m-{ts}")
 
     return slugs
 
@@ -115,6 +117,8 @@ def _parse_market(event: dict, asset: str) -> ActiveMarket | None:
 
     slug_str = m.get("slug", "")
     timeframe_min = 5 if "-updown-5m-" in slug_str else 15
+    if timeframe_min not in ENABLED_TIMEFRAMES_MIN:
+        return None
 
     # Parse end time
     end_str = m.get("endDate", "")
@@ -229,10 +233,11 @@ async def scan_active_markets() -> list[ActiveMarket]:
                 results.append(market)
 
     if results:
-        log.info("[SCANNER] Found %d active 5m/15m markets", len(results))
+        tf_label = ",".join(str(tf) for tf in ENABLED_TIMEFRAMES_MIN)
+        log.info("[SCANNER] Found %d active %sm markets", len(results), tf_label)
         for r in results:
             log.info(
-                "[SCANNER]   %s %sm %s | elapsed=%.1fm rem=%.1fm | up=%.2f down=%.2f",
+                "[SCANNER]   %s %sm %s | elapsed=%.1fm rem=%.1fm | gamma_up=%.4f gamma_down=%.4f",
                 r.asset, r.timeframe_min, r.slug, r.minutes_elapsed, r.time_remaining,
                 r.outcome_price_up, r.outcome_price_down,
             )
